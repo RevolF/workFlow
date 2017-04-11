@@ -10,6 +10,13 @@ Created on Tue Apr 11 10:57:28 2017
 # should include a plot procedure, with each interval depth scaled by the length of the region
 # also note that in 2M pannal, all DMD region is covered by probes, use dmdExons as bedFile
 # note that we have extend dmd region with 300 bp range
+
+# 2017 04 11:
+#	occupies lot of RAM
+#	modify samInfoProc
+#	also cancer the extended region
+#	use samtools depth instead of using a dict
+
 #############################################
 
 from __future__ import division
@@ -18,7 +25,6 @@ from optparse import OptionParser
 import subprocess as sp
 #import shutil
 from multiprocessing import Pool
-
 
 parser=OptionParser()
 
@@ -57,7 +63,8 @@ parser.add_option(
 	'--cpu-nbr',
 	dest='cpuNbr',
 	help='cpu nbr used for processing files, default set to 1',
-	default='1'
+	type = 'int',
+	default=1
 	)
 	
 parser.add_option(
@@ -95,7 +102,7 @@ def main():
 		os.mkdir(options.resDir+'/targetSams')
 	bedDct=getBed(options.bedFile)
 	checkPreFiles(options.sortedDir,options.resDir,options.pluginDir,options.cpuNbr)
-	processingSam(options.resDir,options.cpuNbr,bedDct)
+	processingSam(options.rawDir,options.resDir,options.cpuNbr,bedDct,options.pluginDir)
 	return
 
 def getBed(dmdExon):
@@ -187,19 +194,20 @@ def getSam(resDir,mappedBam,pluginDir):
 		sp.call(samCmd,shell=True)
 	return
 
-def processingSam(resDir,cpuNbr,bedDct):
-	os.chdir(resDir)
+def processingSam(rawDir,resDir,cpuNbr,bedDct,pluginDir):
+	print 'processing all samFiles starts ...'
+	os.chdir(resDir+'/targetSams')
 	samFiles=glob.glob('*.sam')
 	
 	proPool=Pool(cpuNbr)
 	for samFile in samFiles:
-		proPool.apply_async(samInfoProc,args=(resDir,samFile,bedDct))
+		proPool.apply_async(samInfoProc,args=(rawDir,resDir,samFile,bedDct,pluginDir))
 	proPool.close()
 	proPool.join()
-		
+	print 'all samFile processing completed ..'
 	return
 
-def samInfoProc(resDir,samFile,bedDct):
+def samInfoProc(rawDir,resDir,samFile,bedDct,pluginDir):
 	'''
 	bedDct:
 	format like:
@@ -208,6 +216,7 @@ def samInfoProc(resDir,samFile,bedDct):
 		bedDct['EXON57']=[31514904,31515061]
 		in type of int
 	'''
+	print 'samInfoProcessing for '+samFile+' starts ... '
 	os.chdir(resDir)
 	
 	infh = open(resDir+'/targetSams/'+samFile,'r')
@@ -249,7 +258,7 @@ def samInfoProc(resDir,samFile,bedDct):
 	unmappedReadTtlen=0
 	unmappedReads=0
 	
-	tgtReadLen=0
+	tgtTotalLen = 0
 	
 	univRangDct={}
 	
@@ -307,126 +316,46 @@ def samInfoProc(resDir,samFile,bedDct):
 			31137344,33146544
 			extend head and tail by 300
 		'''
-		dmdRange=[31137044,33146844]
+		dmdRange=[31137344,33146544]
 		
-		if not linear[2] == 'chrX' or int(linear[3]) < dmdRange[0] or int(linear[3]) > dmdRange[-1]:
+		sttP=int(linear[3])
+		softTpat=re.compile(r'(\d+)S$')
+		hardTpat=re.compile(r'(\d+)H$')
+		sftTnbr=sum([int(i) for i in softTpat.findall(linear[5])])
+		hardTnbr=sum([int(i) for i in hardTpat.findall(linear[5])])
+		endP=sttP+len(linear[9])-sftTnbr-hardTnbr+1
+		poskey=str(sttP)+'_'+str(endP)
+		
+#		univRangDct is used for storing read stt-end ranging mapping according to each read
+		if univRangDct.has_key(poskey):
+			dupReads += 1
+		else:
+			univRangDct[poskey] = 1
+		
+		if not linear[2] == 'chrX' or sttP < dmdRange[0] or endP > dmdRange[-1]:
 			continue
 		
-		insPat=re.compile(r'(\d+)I')
+		onTgtReads += 1
+		tgtTotalLen = tgtTotalLen + abs(endP - sttP) + 1
 		
+		insPat=re.compile(r'(\d+)I')
 		if 'I' in linear[5]:
 			insReads += 1
 			insLst=insPat.findall(linear[5])
 			insLst=[int(i) for i in insLst]
 			insBases += sum(insLst)
-		
 		delPat=re.compile(r'(\d+)D')
 		if 'D' in linear[5]:
 			delReads += 1
 			delLst=delPat.findall(linear[5])
 			delLst=[int(i) for i in delLst]
 			delBases += sum(delLst)
-			
-		sttP=int(linear[3])
-		
-		softTpat=re.compile(r'(\d+)S$')
-		hardTpat=re.compile(r'(\d+)H$')
-		sftTnbr=sum([int(i) for i in softTpat.findall(linear[5])])
-		hardTnbr=sum([int(i) for i in hardTpat.findall(linear[5])])
-		
-		endP=sttP+len(linear[9])-sftTnbr-hardTnbr+1
-		poskey=str(sttP)+'_'+str(endP)
-		
-#		univRangDct is used for storing read stt-end ranging mapping according to each read
-		if univRangDct.has_key(poskey):
-			univRangDct[poskey] += 1
-		else:
-			univRangDct[poskey] = 1
-	
-	dupLst=[i for i in univRangDct.values() if i>1]
-	dupReads += len(dupLst)
-	'''
-	sortedKeys stores starting and ending postitions, value is appearing time
-	while sortedBedKeys has starts points, value corresponds to ending positions
-	these would be applied for calculating nX coverage
-	'''
-	sortedKeys = sorted(univRangDct,key=lambda x:int(x.split('_')[0]))
-	sortedBedValues=sorted(bedDct.values(),key=lambda x:x[0])
-	
-#	univPosDct stores point mapping reads info
-	univPosDct={}
-#	onTgtReadsLst is used for calculating uniq on target reads
-	onTgtReadsLst=[]
-#	sortedKeys are range str with stt_end info
-	for sortedKey in sortedKeys:
-		startP,tailP=[int(subs) for subs in sortedKey.split('_')]
-		
-		for valuePair in sortedBedValues:
-			valueStt=valuePair[0]
-			valueEnd=valuePair[1]
-			if startP > valueEnd or tailP < valueStt:
-				continue
-			for pointpos in range(valueStt,valueEnd+1):
-				tgtReadLen += (tailP-startP+1)
-				onTgtReadsLst.append(sortedKey)
-				if univPosDct.has_key(pointpos):
-					univPosDct[pointpos] += 1
-				else:
-					univPosDct[pointpos] = 1
-	
-	onTgtReadsLst = list(set(onTgtReadsLst))
-	onTgtReads += len(onTgtReadsLst)
-	
-	tgtTotalLen = 0
-	for subTgtRead in onTgtReadsLst:
-		subsst,subend=subTgtRead.split('_')
-		tgtTotalLen += (int(subend)-int(subsst)+1)
 	
 	tgtRegionLen=round(tgtTotalLen/onTgtReads)
 	
-	sortedPosKeys=sorted(univPosDct.keys())
-	totalReadsDpt=0
-	
-	for subPosKey in sortedPosKeys:
-		onTgtBases += univPosDct[subPosKey]
-		
-		if univPosDct[subPosKey] >= 200:
-			x1bases += 1
-			x10bases += 1
-			x20bases += 1
-			x30bases += 1
-			x50bases += 1
-			x100bases += 1
-			x200bases += 1
-		elif univPosDct[subPosKey] >= 100:
-			x1bases += 1
-			x10bases += 1
-			x20bases += 1
-			x30bases += 1
-			x50bases += 1
-			x100bases += 1
-		elif univPosDct[subPosKey] >= 50:
-			x1bases += 1
-			x10bases += 1
-			x20bases += 1
-			x30bases += 1
-			x50bases += 1
-		elif univPosDct[subPosKey] >= 30:
-			x1bases += 1
-			x10bases += 1
-			x20bases += 1
-			x30bases += 1
-		elif univPosDct[subPosKey] >= 20:
-			x1bases += 1
-			x10bases += 1
-			x20bases += 1
-		elif univPosDct[subPosKey] >=10:
-			x1bases += 1
-			x10bases += 1
-		elif univPosDct[subPosKey] >= 1:
-			x1bases += 1
-			
-		totalReadsDpt += univPosDct[subPosKey]
+#	depthInfoProc(rawDir,sortedBam,pluginDir)
+	sortedBamDp=samFile.rstrip('sam')+'bam'
+	x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,ontgtBases,univPosLst=depthInfoProc(rawDir,sortedBamDp,pluginDir)
 	
 	tgtSize=dmdRange[1]-dmdRange[0]
 	
@@ -458,7 +387,7 @@ def samInfoProc(resDir,samFile,bedDct):
 	basegr20pct=round(basegr20/totalBases,4)
 	basegr30pct=round(basegr30/totalBases,4)
 	meanReadLen=round((mappedReadTtlen+unmappedReadTtlen)/totalReads)
-	evenScMe=evenScore(univPosDct,tgtSize,tgtMeanDpt)
+	evenScMe=evenScore(univPosLst,tgtSize,tgtMeanDpt)
 	
 	basicStatFile=re.findall(r'IonXpress_\d+',samFile)[0]+'_Basic_statistics_for_mapping_data.txt'
 	
@@ -514,16 +443,75 @@ def samInfoProc(resDir,samFile,bedDct):
 	
 	return
 
-
-def evenScore(univPosDctEs,tgtSizeEs,meanCovEs):
-	evenSc=0
-	covLst=univPosDctEs.values()
-	covLst.sort(reverse=True)
+def depthInfoProc(rawDir,sortedBam,pluginDir):
+	os.chdir(rawDir)
+	samDptCmd=pluginDir+'/samtools depth '+sortedBam+' > '+sortedBam+'.dpth'
+	sp.call(samDptCmd,shell=True)
 	
+	x1bases=0
+	x10bases=0
+	x20bases=0
+	x30bases=0
+	x50bases=0
+	x100bases=0
+	x200bases=0
+	
+	ontgtBases=0
+	
+	univPosDptLst=[]
+	
+	dmdRange=[31137344,33146544]
+	with open(sortBam+'.dpth','r') as infh:
+		for line in iter(infh):
+			linear=line.strip().split('\t')
+			if linear[0] == 'chrX' and dmdRange[0] <= int(linear[1]) <= dmdRange[1]:
+				ontgtBases += 1
+				univPosDptLst.append(int(linear[2]))
+				
+			if int(linear[2]) >= 200:
+				x1bases += 1
+				x10bases += 1
+				x20bases += 1
+				x30bases += 1
+				x50bases += 1
+				x100bases += 1
+				x200bases += 1
+			elif int(linear[2]) >= 100:
+				x1bases += 1
+				x10bases += 1
+				x20bases += 1
+				x30bases += 1
+				x50bases += 1
+				x100bases += 1
+			elif int(linear[2]) >= 50:
+				x1bases += 1
+				x10bases += 1
+				x20bases += 1
+				x30bases += 1
+				x50bases += 1
+			elif int(linear[2]) >= 30:
+				x1bases += 1
+				x10bases += 1
+				x20bases += 1
+				x30bases += 1
+			elif int(linear[2]) >= 20:
+				x1bases += 1
+				x10bases += 1
+				x20bases += 1
+			elif int(linear[2]) >= 10:
+				x1bases += 1
+				x10bases += 1
+			elif int(linear[2]) >= 1:
+				x1bases += 1
+	
+	return x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,ontgtBases,univPosDptLst
+
+def evenScore(covLst,tgtSizeEs,meanCovEs):
+	evenSc=0
+	covLst.sort(reverse=True)
 	for i in range(1,int(meanCovEs)+1):
 		ct=countNbr(covLst,i)
 		evenSc += round(ct/(tgtSizeEs*meanCovEs),3)
-	
 	return evenSc
 
 def countNbr(covLstCn,candi):
