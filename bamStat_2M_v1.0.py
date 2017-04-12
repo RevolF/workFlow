@@ -17,6 +17,8 @@ Created on Tue Apr 11 10:57:28 2017
 #	also cancer the extended region
 #	use samtools depth instead of using a dict
 
+# 2017 04 12:
+#	modified the function composition
 #############################################
 
 from __future__ import division
@@ -102,7 +104,11 @@ def main():
 		os.mkdir(options.resDir+'/targetSams')
 	bedDct=getBed(options.bedFile)
 	checkPreFiles(options.sortedDir,options.resDir,options.pluginDir,options.cpuNbr)
-	processingSam(options.rawDir,options.resDir,options.cpuNbr,bedDct,options.pluginDir)
+	processingSam(options.sortedDir,options.resDir,options.cpuNbr,bedDct,options.pluginDir)
+#	sp.call('rm '+options.sortedDir+'/*sorted.bam',shell=True)
+#	sp.call('rm '+options.sortedDir+'/*sorted.bam.bai',shell=True)
+	sp.call('rm '+options.sortedDir+'/*rawlib.bam',shell=True)
+	sp.call('rm -rf '+options.resDir+'/targetSams')
 	return
 
 def getBed(dmdExon):
@@ -201,13 +207,110 @@ def processingSam(rawDir,resDir,cpuNbr,bedDct,pluginDir):
 	
 	proPool=Pool(cpuNbr)
 	for samFile in samFiles:
-		proPool.apply_async(samInfoProc,args=(rawDir,resDir,samFile,bedDct,pluginDir))
+		proPool.apply_async(infoProc,args=(rawDir,resDir,samFile,bedDct,pluginDir))
 	proPool.close()
 	proPool.join()
 	print 'all samFile processing completed ..'
 	return
 
-def samInfoProc(rawDir,resDir,samFile,bedDct,pluginDir):
+def infoProc(rawDir,resDir,samFile,bedDct,pluginDir):
+	
+	dmdRange=[31137344,33146544]
+	totalReads,totalBases,basegr20,basegr30,mappedReads,mappedBases,onTgtReads,dupReads,mismReads,mismBases,insReads,insBases,delReads,delBases,mappedReadTtlen,unmappedReadTtlen,unmappedReads,tgtTotalLen=samInfoProc(rawDir,resDir,samFile,bedDct)
+	
+	tgtRegionLen=round(tgtTotalLen/onTgtReads)
+	
+#	depthInfoProc(rawDir,sortedBam,pluginDir)
+	sortedBamDp=samFile.rstrip('sam')+'bam'
+	x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,onTgtBases,univPosLst=depthInfoProc(rawDir,sortedBamDp,pluginDir)
+	
+	tgtSize=dmdRange[1]-dmdRange[0]
+	
+	x1rate=round(x1bases/tgtSize,4)*100
+	x10rate=round(x10bases/tgtSize,4)*100
+	x20rate=round(x20bases/tgtSize,4)*100
+	x30rate=round(x30bases/tgtSize,4)*100
+	x50rate=round(x50bases/tgtSize,4)*100
+	x100rate=round(x100bases/tgtSize,4)*100
+	x200rate=round(x200bases/tgtSize,4)*100
+	
+	mappedReadLen = round(mappedReadTtlen/mappedReads)
+	unmappedReadLen = round(unmappedReadTtlen/unmappedReads)
+	
+	onTgtReadRate=round(onTgtReads/totalReads,4)
+	onTgtBaseRate=round(onTgtBases/totalBases,4)
+	dupReadsRate=round(dupReads/totalReads,4)
+	mismReadRate=round(mismReads/totalReads,4)
+	mismBaseRate=round(mismBases/totalBases,4)
+	insReadRate=round(insReads/totalReads,4)
+	insBaseRate=round(insBases/totalBases,4)
+	delReadRate=round(delReads/totalReads,4)
+	delBaseRate=round(delBases/totalBases,4)
+	mappedReadRate=round(mappedReads/totalReads,4)
+	mappedBaseRate=round(mappedBases/totalBases,4)
+	
+	tgtMeanDpt=round(onTgtBases/tgtSize)
+	
+	basegr20pct=round(basegr20/totalBases,4)
+	basegr30pct=round(basegr30/totalBases,4)
+	meanReadLen=round((mappedReadTtlen+unmappedReadTtlen)/totalReads)
+	evenScMe=evenScore(univPosLst,tgtSize,tgtMeanDpt)
+	
+	basicStatFile=re.findall(r'IonXpress_\d+',samFile)[0]+'_Basic_statistics_for_mapping_data.txt'
+	
+	outfh=open(resDir+'/'+basicStatFile,'w')
+	print 'starting writing info to '+resDir+'/'+basicStatFile
+	
+	outfh.write('target_region_size(bp)\t'+str(tgtSize)+'\n')
+	outfh.write('total_reads\t'+str(totalReads)+'\n')
+	outfh.write('total_bases\t'+str(totalBases)+'\n')
+
+	outfh.write('percent_of_bases_with_quality >= 20\t'+str(100*basegr20pct)+'%\n')
+	outfh.write('percent_of_bases_with_quality >= 30\t'+str(100*basegr30pct)+'%\n')
+
+	outfh.write('mapped_reads\t'+str(mappedReads)+'\n')
+	outfh.write('mapped_reads_rate\t'+str(100*mappedReadRate)+'%\n')
+	outfh.write('mapped_bases\t'+str(mappedBases)+'\n')
+	outfh.write('mapped_base_rate\t'+str(100*mappedBaseRate)+'%\n')
+
+	outfh.write('on-target_reads\t'+str(onTgtReads)+'\n')
+	outfh.write('on-target_read_rate\t'+str(100*onTgtReadRate)+'%\n')
+	outfh.write('on-target_bases\t'+str(onTgtBases)+'\n')
+	outfh.write('on-target_base_rate\t'+str(100*onTgtBaseRate)+'%\n')
+	
+	outfh.write('duplicated_reads\t'+str(dupReads)+'\n')
+	outfh.write('duplicated_read_rate\t'+str(100*dupReadsRate)+'%\n')
+	
+	outfh.write('1X_coverage_of_target_region\t'+str(x1rate)+'%\n')
+	outfh.write('10X_coverage_of_target_region\t'+str(x10rate)+'%\n')
+	outfh.write('20X_coverage_of_target_region\t'+str(x20rate)+'%\n')
+	outfh.write('30X_coverage_of_target_region\t'+str(x30rate)+'%\n')
+	outfh.write('50X_coverage_of_target_region\t'+str(x50rate)+'%\n')
+	outfh.write('100X_coverage_of_target_region\t'+str(x100rate)+'%\n')
+	outfh.write('200X_coverage_of_target_region\t'+str(x200rate)+'%\n')
+	
+	outfh.write('mean_depth_of_target_region\t'+str(tgtMeanDpt)+'\n')
+	outfh.write('mismatch_reads\t'+str(mismReads)+'\n')
+	outfh.write('mismatch_read_rate\t'+str(mismReadRate*100)+'%\n')
+#	outfh.write('mismatch bases\t'+str(mismBases)+'\n')
+	outfh.write('mismatch_base_rate\t'+str(mismBaseRate*100)+'%\n')
+	outfh.write('insertion_read_rate\t'+str(insReadRate*100)+'%\n')
+	outfh.write('insertion_base_rate\t'+str(insBaseRate*100)+'%\n')
+	outfh.write('deletion_read_rate\t'+str(delReadRate*100)+'%\n')
+	outfh.write('deletion_base_rate\t'+str(delBaseRate*100)+'%\n')
+	
+	outfh.write('eveness_score\t'+str(evenScMe)+'\n')
+	
+	outfh.write('mean_read_length\t'+str(meanReadLen)+'\n')
+	outfh.write('mapped_read_length\t'+str(mappedReadLen)+'\n')
+	outfh.write('unmapped_read_length\t'+str(unmappedReadLen)+'\n')
+	outfh.write('target_region_read_length\t'+str(tgtRegionLen)+'\n')
+	
+	outfh.close()
+	
+	return
+
+def samInfoProc(rawDir,resDir,samFile,bedDct):
 	'''
 	bedDct:
 	format like:
@@ -231,17 +334,8 @@ def samInfoProc(rawDir,resDir,samFile,bedDct,pluginDir):
 	mappedBases=0
 	
 	onTgtReads=0
-	onTgtBases=0
 	
 	dupReads=0
-	
-	x1bases=0
-	x10bases=0
-	x20bases=0
-	x30bases=0
-	x50bases=0
-	x100bases=0
-	x200bases=0
 	
 	mismReads=0
 	mismBases=0
@@ -251,10 +345,8 @@ def samInfoProc(rawDir,resDir,samFile,bedDct,pluginDir):
 	delReads=0
 	delBases=0
 	
-	mappedReadLen=0
 	mappedReadTtlen=0
 	
-	unmappedReadLen=0
 	unmappedReadTtlen=0
 	unmappedReads=0
 	
@@ -332,7 +424,7 @@ def samInfoProc(rawDir,resDir,samFile,bedDct,pluginDir):
 		else:
 			univRangDct[poskey] = 1
 		
-		if not linear[2] == 'chrX' or sttP < dmdRange[0] or endP > dmdRange[-1]:
+		if linear[2] != 'chrX' or endP < dmdRange[0] or sttP > dmdRange[-1]:
 			continue
 		
 		onTgtReads += 1
@@ -350,103 +442,18 @@ def samInfoProc(rawDir,resDir,samFile,bedDct,pluginDir):
 			delLst=delPat.findall(linear[5])
 			delLst=[int(i) for i in delLst]
 			delBases += sum(delLst)
-	
-	tgtRegionLen=round(tgtTotalLen/onTgtReads)
-	
-#	depthInfoProc(rawDir,sortedBam,pluginDir)
-	sortedBamDp=samFile.rstrip('sam')+'bam'
-	x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,ontgtBases,univPosLst=depthInfoProc(rawDir,sortedBamDp,pluginDir)
-	
-	tgtSize=dmdRange[1]-dmdRange[0]
-	
-	x1rate=round(x1bases/tgtSize,4)*100
-	x10rate=round(x10bases/tgtSize,4)*100
-	x20rate=round(x20bases/tgtSize,4)*100
-	x30rate=round(x30bases/tgtSize,4)*100
-	x50rate=round(x50bases/tgtSize,4)*100
-	x100rate=round(x100bases/tgtSize,4)*100
-	x200rate=round(x200bases/tgtSize,4)*100
-	
-	mappedReadLen += round(mappedReadTtlen/mappedReads)
-	unmappedReadLen += round(unmappedReadTtlen/unmappedReads)
-	
-	onTgtReadRate=round(onTgtReads/totalReads,4)
-	onTgtBaseRate=round(onTgtBases/totalBases,4)
-	dupReadsRate=round(dupReads/totalReads,4)
-	mismReadRate=round(mismReads/totalReads,4)
-	mismBaseRate=round(mismBases/totalBases,4)
-	insReadRate=round(insReads/totalReads,4)
-	insBaseRate=round(insBases/totalBases,4)
-	delReadRate=round(delReads/totalReads,4)
-	delBaseRate=round(delBases/totalBases,4)
-	mappedReadRate=round(mappedReads/totalReads,4)
-	mappedBaseRate=round(mappedBases/totalBases,4)
-	
-	tgtMeanDpt=round(onTgtBases/tgtSize)
-	
-	basegr20pct=round(basegr20/totalBases,4)
-	basegr30pct=round(basegr30/totalBases,4)
-	meanReadLen=round((mappedReadTtlen+unmappedReadTtlen)/totalReads)
-	evenScMe=evenScore(univPosLst,tgtSize,tgtMeanDpt)
-	
-	basicStatFile=re.findall(r'IonXpress_\d+',samFile)[0]+'_Basic_statistics_for_mapping_data.txt'
-	
-	outfh=open(resDir+'/'+basicStatFile,'w')
-	
-	outfh.write('target_region_size(bp)\t'+str(tgtSize)+'\n')
-	outfh.write('total_reads\t'+str(totalReads)+'\n')
-	outfh.write('total_bases\t'+str(totalBases)+'\n')
-
-	outfh.write('percent_of_bases_with_quality >= 20\t'+str(100*basegr20pct)+'%\n')
-	outfh.write('percent_of_bases_with_quality >= 30\t'+str(100*basegr30pct)+'%\n')
-
-	outfh.write('mapped_reads\t'+str(mappedReads)+'\n')
-	outfh.write('mapped_reads_rate\t'+str(100*mappedReadRate)+'%\n')
-	outfh.write('mapped_bases\t'+str(mappedBases)+'\n')
-	outfh.write('mapped_base_rate\t'+str(100*mappedBaseRate)+'%\n')
-
-	outfh.write('on-target_reads\t'+str(onTgtReads)+'\n')
-	outfh.write('on-target_read_rate\t'+str(100*onTgtReadRate)+'%\n')
-	outfh.write('on-target_bases\t'+str(onTgtBases)+'\n')
-	outfh.write('on-target_base_rate\t'+str(100*onTgtBaseRate)+'%\n')
-	
-	outfh.write('duplicated_reads\t'+str(dupReads)+'\n')
-	outfh.write('duplicated_read_rate\t'+str(100*dupReadsRate)+'%\n')
-	
-	outfh.write('1X_coverage_of_target_region\t'+str(x1rate)+'%\n')
-	outfh.write('10X_coverage_of_target_region\t'+str(x10rate)+'%\n')
-	outfh.write('20X_coverage_of_target_region\t'+str(x20rate)+'%\n')
-	outfh.write('30X_coverage_of_target_region\t'+str(x30rate)+'%\n')
-	outfh.write('50X_coverage_of_target_region\t'+str(x50rate)+'%\n')
-	outfh.write('100X_coverage_of_target_region\t'+str(x100rate)+'%\n')
-	outfh.write('200X_coverage_of_target_region\t'+str(x200rate)+'%\n')
-	
-	outfh.write('mean_depth_of_target_region\t'+str(tgtMeanDpt)+'\n')
-	outfh.write('mismatch_reads\t'+str(mismReads)+'\n')
-	outfh.write('mismatch_read_rate\t'+str(mismReadRate*100)+'%\n')
-#	outfh.write('mismatch bases\t'+str(mismBases)+'\n')
-	outfh.write('mismatch_base_rate\t'+str(mismBaseRate*100)+'%\n')
-	outfh.write('insertion_read_rate\t'+str(insReadRate*100)+'%\n')
-	outfh.write('insertion_base_rate\t'+str(insBaseRate*100)+'%\n')
-	outfh.write('deletion_read_rate\t'+str(delReadRate*100)+'%\n')
-	outfh.write('deletion_base_rate\t'+str(delBaseRate*100)+'%\n')
-	
-	outfh.write('eveness_score\t'+str(evenScMe)+'\n')
-	
-	outfh.write('mean_read_length\t'+str(meanReadLen)+'\n')
-	outfh.write('mapped_read_length\t'+str(mappedReadLen)+'\n')
-	outfh.write('unmapped_read_length\t'+str(unmappedReadLen)+'\n')
-	outfh.write('target_region_read_length\t'+str(tgtRegionLen)+'\n')
-	
 	infh.close()
-	outfh.close()
-	
-	return
+	os.remove(resDir+'/targetSams/'+samFile)
+	return totalReads,totalBases,basegr20,basegr30,mappedReads,mappedBases,onTgtReads,dupReads,mismReads,mismBases,insReads,insBases,delReads,delBases,mappedReadTtlen,unmappedReadTtlen,unmappedReads,tgtTotalLen
 
 def depthInfoProc(rawDir,sortedBam,pluginDir):
 	os.chdir(rawDir)
-	samDptCmd=pluginDir+'/samtools depth '+sortedBam+' > '+sortedBam+'.dpth'
-	sp.call(samDptCmd,shell=True)
+	
+	if not os.path.exists(sortedBam+'.dpth'):
+		samDptCmd=pluginDir+'/samtools depth '+sortedBam+' > '+sortedBam+'.dpth'
+		sp.call(samDptCmd,shell=True)
+	
+	print 'depthInfoProc starts ...'
 	
 	x1bases=0
 	x10bases=0
@@ -461,49 +468,47 @@ def depthInfoProc(rawDir,sortedBam,pluginDir):
 	univPosDptLst=[]
 	
 	dmdRange=[31137344,33146544]
-	with open(sortBam+'.dpth','r') as infh:
+	with open(sortedBam+'.dpth','r') as infh:
 		for line in iter(infh):
 			linear=line.strip().split('\t')
 			if linear[0] == 'chrX' and dmdRange[0] <= int(linear[1]) <= dmdRange[1]:
 				ontgtBases += 1
 				univPosDptLst.append(int(linear[2]))
-				
-			if int(linear[2]) >= 200:
-				x1bases += 1
-				x10bases += 1
-				x20bases += 1
-				x30bases += 1
-				x50bases += 1
-				x100bases += 1
-				x200bases += 1
-			elif int(linear[2]) >= 100:
-				x1bases += 1
-				x10bases += 1
-				x20bases += 1
-				x30bases += 1
-				x50bases += 1
-				x100bases += 1
-			elif int(linear[2]) >= 50:
-				x1bases += 1
-				x10bases += 1
-				x20bases += 1
-				x30bases += 1
-				x50bases += 1
-			elif int(linear[2]) >= 30:
-				x1bases += 1
-				x10bases += 1
-				x20bases += 1
-				x30bases += 1
-			elif int(linear[2]) >= 20:
-				x1bases += 1
-				x10bases += 1
-				x20bases += 1
-			elif int(linear[2]) >= 10:
-				x1bases += 1
-				x10bases += 1
-			elif int(linear[2]) >= 1:
-				x1bases += 1
-	
+				if int(linear[2]) >= 200:
+					x1bases += 1
+					x10bases += 1
+					x20bases += 1
+					x30bases += 1
+					x50bases += 1
+					x100bases += 1
+					x200bases += 1
+				elif int(linear[2]) >= 100:
+					x1bases += 1
+					x10bases += 1
+					x20bases += 1
+					x30bases += 1
+					x50bases += 1
+					x100bases += 1
+				elif int(linear[2]) >= 50:
+					x1bases += 1
+					x10bases += 1
+					x20bases += 1
+					x30bases += 1
+					x50bases += 1
+				elif int(linear[2]) >= 30:
+					x1bases += 1
+					x10bases += 1
+					x20bases += 1
+					x30bases += 1
+				elif int(linear[2]) >= 20:
+					x1bases += 1
+					x10bases += 1
+					x20bases += 1
+				elif int(linear[2]) >= 10:
+					x1bases += 1
+					x10bases += 1
+				elif int(linear[2]) >= 1:
+					x1bases += 1
 	return x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,ontgtBases,univPosDptLst
 
 def evenScore(covLst,tgtSizeEs,meanCovEs):
@@ -512,10 +517,11 @@ def evenScore(covLst,tgtSizeEs,meanCovEs):
 	for i in range(1,int(meanCovEs)+1):
 		ct=countNbr(covLst,i)
 		evenSc += round(ct/(tgtSizeEs*meanCovEs),3)
+	print evenSc
 	return evenSc
 
 def countNbr(covLstCn,candi):
-	ctCn=0
+	ctCn = 0
 	for j in covLstCn:
 		if candi <= j:
 			ctCn += 1
