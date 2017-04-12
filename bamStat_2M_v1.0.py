@@ -84,6 +84,14 @@ parser.add_option(
 	help='single processing bam input, name should be like: IonXpress_018_rawlib.bam'
 	)
 	
+parser.add_option(
+	'-X',
+	'--remove-files',
+	dest='rmFile',
+	help='signal of if or not remove all intermediate files, y stands for yes and n for no, default set to n',
+	default='n'
+	)
+	
 (options,args)=parser.parse_args()
 
 if not options.sortedDir or not options.resDir:
@@ -105,10 +113,11 @@ def main():
 	bedDct=getBed(options.bedFile)
 	checkPreFiles(options.sortedDir,options.resDir,options.pluginDir,options.cpuNbr)
 	processingSam(options.sortedDir,options.resDir,options.cpuNbr,bedDct,options.pluginDir)
-#	sp.call('rm '+options.sortedDir+'/*sorted.bam',shell=True)
-#	sp.call('rm '+options.sortedDir+'/*sorted.bam.bai',shell=True)
-	sp.call('rm '+options.sortedDir+'/*rawlib.bam',shell=True)
-	sp.call('rm -rf '+options.resDir+'/targetSams')
+	if options.rmFile == 'y':
+		sp.call('rm '+options.sortedDir+'/*sorted.bam',shell=True)
+		sp.call('rm '+options.sortedDir+'/*sorted.bam.bai',shell=True)
+		sp.call('rm '+options.sortedDir+'/*rawlib.bam',shell=True)
+		sp.call('rm -rf '+options.resDir+'/targetSams')
 	return
 
 def getBed(dmdExon):
@@ -472,7 +481,7 @@ def depthInfoProc(rawDir,sortedBam,pluginDir):
 		for line in iter(infh):
 			linear=line.strip().split('\t')
 			if linear[0] == 'chrX' and dmdRange[0] <= int(linear[1]) <= dmdRange[1]:
-				ontgtBases += 1
+				ontgtBases += int(linear[2])
 				univPosDptLst.append(int(linear[2]))
 				if int(linear[2]) >= 200:
 					x1bases += 1
