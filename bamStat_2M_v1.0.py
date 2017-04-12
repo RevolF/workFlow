@@ -112,6 +112,7 @@ def main():
 		os.mkdir(options.resDir+'/targetSams')
 	bedDct=getBed(options.bedFile)
 	checkPreFiles(options.sortedDir,options.resDir,options.pluginDir,options.cpuNbr)
+#	processingSam(rawDir,resDir,cpuNbr,bedDct,pluginDir):
 	processingSam(options.sortedDir,options.resDir,options.cpuNbr,bedDct,options.pluginDir)
 	if options.rmFile == 'y':
 		sp.call('rm '+options.sortedDir+'/*sorted.bam',shell=True)
@@ -155,6 +156,7 @@ def checkPreFiles(rawDir,resDir,pluginDir,cpuNbr):
 	'''
 	os.chdir(rawDir)
 	mappedBams=glob.glob('*rawlib.bam')
+
 	if mappedBams == []:
 		rawBams=glob.glob('*basecaller.bam')
 		if rawBams == []:
@@ -166,19 +168,21 @@ def checkPreFiles(rawDir,resDir,pluginDir,cpuNbr):
 		mapPool.join()
 
 	mappedBams=glob.glob('*rawlib.bam')
+	print mappedBams
+	
 	sortPool=Pool(cpuNbr)
 	for mappedBam in mappedBams:
-		sortPool.apply_async(sortBam,rawDir,mappedBam,pluginDir)
+		sortPool.apply_async(sortBam,args=(rawDir,mappedBam,pluginDir))
 	sortPool.close()
 	sortPool.join()
 	
 	samPool=Pool(cpuNbr)
 	for mappedBam in mappedBams:
-		samPool.apply_async(getSam,args=(resDir,mappedBam,pluginDir))
+		samPool.apply_async(getSam,args=(rawDir,resDir,mappedBam,pluginDir))
 	samPool.close()
 	samPool.join()
 	
-	print 'all bam mapped and sorted and samFiles are ready...'
+	print 'all bam mapped and sorted and samFiles are ready ...'
 	return
 
 def mapBam(rawDir,rawBam,pluginDir):
@@ -192,20 +196,22 @@ def mapBam(rawDir,rawBam,pluginDir):
 def sortBam(rawDir,mappedBam,pluginDir):
 	os.chdir(rawDir)
 	ionXpress=re.findall(r'IonXpress\_\d+',mappedBam)[0]
-	if not os.path.exists(ionXpress+'_rawlib.sorted'):
+	if not os.path.exists(ionXpress+'_rawlib.sorted.bam'):
+		print 'sort bam '+ mappedBam +' starts ...'
 		sortCmd=pluginDir+'/samtools sort %s %s' % (mappedBam,ionXpress+'_rawlib.sorted')
 		sp.call(sortCmd,shell=True)
 		if not os.path.exists(ionXpress+'_rawlib.sorted.bam.bai'):
 			sp.call(pluginDir+'/samtools index %s' % (ionXpress+'_rawlib.sorted.bam'),shell=True)
 	return
 
-def getSam(resDir,mappedBam,pluginDir):
-	os.chdir(resDir+'/targetSams')
+def getSam(rawDir,resDir,mappedBam,pluginDir):
+	os.chdir(rawDir)
 	ionXpress=re.findall(r'IonXpress\_\d+',mappedBam)[0]
-	sortedBam=ionXpress+'_rawlib_sorted.bam'
-	samFile=ionXpress+'_rawlib_sorted.sam'
+	sortedBam=ionXpress+'_rawlib.sorted.bam'
+	print sortedBam
+	samFile=ionXpress+'_rawlib.sorted.sam'
 	if not os.path.exists(samFile):
-		samCmd=pluginDir+'/samtools view %s > %s' % (sortedBam,resDir+'/targetSams/'+samFile)
+		samCmd=pluginDir+'/samtools view %s > %s' % (rawDir+'/'+sortedBam,resDir+'/targetSams/'+samFile)
 		sp.call(samCmd,shell=True)
 	return
 
@@ -328,9 +334,8 @@ def samInfoProc(rawDir,resDir,samFile,bedDct):
 		bedDct['EXON57']=[31514904,31515061]
 		in type of int
 	'''
-	print 'samInfoProcessing for '+samFile+' starts ... '
+	print 'samInfoProc for '+samFile+' starts ... '
 	os.chdir(resDir)
-	
 	infh = open(resDir+'/targetSams/'+samFile,'r')
 	
 	totalReads=0
@@ -451,13 +456,13 @@ def samInfoProc(rawDir,resDir,samFile,bedDct):
 			delLst=delPat.findall(linear[5])
 			delLst=[int(i) for i in delLst]
 			delBases += sum(delLst)
+	
 	infh.close()
-	os.remove(resDir+'/targetSams/'+samFile)
+	print 'samInfoProc ends for '+samFile+' ...'
 	return totalReads,totalBases,basegr20,basegr30,mappedReads,mappedBases,onTgtReads,dupReads,mismReads,mismBases,insReads,insBases,delReads,delBases,mappedReadTtlen,unmappedReadTtlen,unmappedReads,tgtTotalLen
 
 def depthInfoProc(rawDir,sortedBam,pluginDir):
 	os.chdir(rawDir)
-	
 	if not os.path.exists(sortedBam+'.dpth'):
 		samDptCmd=pluginDir+'/samtools depth '+sortedBam+' > '+sortedBam+'.dpth'
 		sp.call(samDptCmd,shell=True)
@@ -518,6 +523,7 @@ def depthInfoProc(rawDir,sortedBam,pluginDir):
 					x10bases += 1
 				elif int(linear[2]) >= 1:
 					x1bases += 1
+	print 'depthInfoProc ends for '+ sortedBam + ' ...'
 	return x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,ontgtBases,univPosDptLst
 
 def evenScore(covLst,tgtSizeEs,meanCovEs):
