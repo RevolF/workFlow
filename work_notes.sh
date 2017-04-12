@@ -3508,11 +3508,14 @@ a barplot example:
 	
 	python -m py_compile file.py
 	
-0410:
+0411:
 	prepare for the 2M QC panal
 	including using depth plot and coverage
 	
 	note that recent P37 has lots of indel, should keep good QC control
+	
+0412:
+	test the new 2M QC pipeline
 	
 	
 	
