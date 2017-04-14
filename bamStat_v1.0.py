@@ -1,25 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Apr 11 10:57:28 2017
+Created on Thu Apr 13 09:39:17 2017
 
 @author: thor
 """
 
 #################### log ####################
-# clarify the syntex and control for the bed input
-# should include a plot procedure, with each interval depth scaled by the length of the region
-# also note that in 2M pannal, all DMD region is covered by probes, use dmdExons as bedFile
-# note that we have extend dmd region with 300 bp range
-
-# 2017 04 11:
-#	occupies lot of RAM
-#	modify samInfoProc
-#	also cancer the extended region
-#	use samtools depth instead of using a dict
-
-# 2017 04 12:
-#	modified the function composition
+#	this is for getting out bam stat file after given a bed file
+#	given bed file should be specified as:
+#		segmentID     startPos    endPos
+#	if not for DMD, specific bed file should be given in params
+#	for easy computing burden, modify bedDct to list type
+#		and this list is in right order sorted
 #############################################
+
 
 from __future__ import division
 import re,glob,sys,os
@@ -49,8 +43,8 @@ parser.add_option(
 	'-B',
 	'--bed-file',
 	dest='bedFile',
-	help='complete path to bed file, default set to: /media/disk2/ljzhang/data/dmdExons/dmd.exons.txt, in fmt of EXON57  31514904        31515061',
-	default='/media/disk2/ljzhang/data/dmdExons/dmd.exons.txt'
+	help='complete path to bed file, default set to: /media/disk2/ljzhang/data/DMD_plugin/DMD100_Targets.bed',
+	default='/media/disk2/ljzhang/data/DMD_plugin/DMD100_Targets.bed'
 	)
 	
 parser.add_option(
@@ -128,23 +122,26 @@ def getBed(dmdExon):
 	should return in form like:
 		bedDct['EXON57']=[31514904,31515061]
 		in type of int
+	for other bam bed file, should make corresponding modifications
 	'''
-	bedDct={}
+	'''
+	bed briefed info
+		X       10911688        10911888
+		X       10914229        10914429
+		X       28932233        28932483
+		X       29003094        29003244
+		X       30211769        30211913
+		X       30885651        30885777
+		X       30887994        30888198
+		X       31137296        31140096
+	'''
+	bedDct=[]
+	
 	with open(dmdExon,'r') as infh:
-		intronLst=[]
-		ind = 0
 		for line in iter(infh):
 			linear=line.strip().split('\t')
-			exonNbr=linear[0].lstrip('EXON')
-			bedDct[linear[0]]=[int(linear[1]),int(linear[2])]
-			if ind == 0:
-				intronLst.append(int(linear[2]))
-				ind = 1
-				continue
-			intronLst.append(int(linear[1]))
-			bedDct['INTRON'+exonNbr]=intronLst
-			intronLst=[int(linear[2])]
-	print 'bedDct generated .. '
+			bedDct.append([int(linear[1]),int(linear[2])])
+	print 'bedDct generated ...'
 	return bedDct
 
 def checkPreFiles(rawDir,resDir,pluginDir,cpuNbr):
@@ -206,6 +203,7 @@ def getSam(rawDir,resDir,mappedBam,pluginDir):
 	os.chdir(rawDir)
 	ionXpress=re.findall(r'IonXpress\_\d+',mappedBam)[0]
 	sortedBam=ionXpress+'_rawlib.sorted.bam'
+	
 	samFile=ionXpress+'_rawlib.sorted.sam'
 	if not os.path.exists(samFile):
 		samCmd=pluginDir+'/samtools view %s > %s' % (rawDir+'/'+sortedBam,resDir+'/targetSams/'+samFile)
@@ -216,6 +214,7 @@ def processingSam(rawDir,resDir,cpuNbr,bedDct,pluginDir):
 	print 'processing all samFiles starts ...'
 	os.chdir(resDir+'/targetSams')
 	samFiles=glob.glob('*.sam')
+	
 	proPool=Pool(cpuNbr)
 	for samFile in samFiles:
 		proPool.apply_async(infoProc,args=(rawDir,resDir,samFile,bedDct,pluginDir))
@@ -225,17 +224,17 @@ def processingSam(rawDir,resDir,cpuNbr,bedDct,pluginDir):
 	return
 
 def infoProc(rawDir,resDir,samFile,bedDct,pluginDir):
-	
-	dmdRange=[31137344,33146544]
 	totalReads,totalBases,basegr20,basegr30,mappedReads,mappedBases,onTgtReads,dupReads,mismReads,mismBases,insReads,insBases,delReads,delBases,mappedReadTtlen,unmappedReadTtlen,unmappedReads,tgtTotalLen=samInfoProc(rawDir,resDir,samFile,bedDct)
 	
 	tgtRegionLen=round(tgtTotalLen/onTgtReads)
 	
 #	depthInfoProc(rawDir,sortedBam,pluginDir)
 	sortedBamDp=samFile.rstrip('sam')+'bam'
-	x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,onTgtBases,univPosLst=depthInfoProc(rawDir,sortedBamDp,pluginDir)
+	x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,onTgtBases,univPosLst=depthInfoProc(rawDir,sortedBamDp,pluginDir,bedDct)
 	
-	tgtSize=dmdRange[1]-dmdRange[0]
+	tgtSize=0
+	for subList in bedDct:
+		tgtSize = tgtSize+abs(subList[1]-subList[0])+1
 	
 	x1rate=round(x1bases/tgtSize,4)*100
 	x10rate=round(x10bases/tgtSize,4)*100
@@ -265,6 +264,8 @@ def infoProc(rawDir,resDir,samFile,bedDct,pluginDir):
 	basegr20pct=round(basegr20/totalBases,4)
 	basegr30pct=round(basegr30/totalBases,4)
 	meanReadLen=round((mappedReadTtlen+unmappedReadTtlen)/totalReads)
+#	evenScore(covLst,tgtSizeEs,meanCovEs)
+	
 	evenScMe=evenScore(univPosLst,tgtSize,tgtMeanDpt)
 	
 	basicStatFile=re.findall(r'IonXpress_\d+',samFile)[0]+'_Basic_statistics_for_mapping_data.txt'
@@ -325,12 +326,9 @@ def samInfoProc(rawDir,resDir,samFile,bedDct):
 	'''
 	bedDct:
 	format like:
-		EXON57  31514904        31515061
-	should return in form like:
-		bedDct['EXON57']=[31514904,31515061]
-		in type of int
+		[[31514904, 31515061], ... ]
 	'''
-	print 'samInfoProc for '+samFile+' starts ... '
+	print 'samInfoProc for '+samFile+' starts ...'
 	os.chdir(resDir)
 	infh = open(resDir+'/targetSams/'+samFile,'r')
 	
@@ -356,20 +354,15 @@ def samInfoProc(rawDir,resDir,samFile,bedDct):
 	delBases=0
 	
 	mappedReadTtlen=0
-	
 	unmappedReadTtlen=0
 	unmappedReads=0
-	
 	tgtTotalLen = 0
-	
 	univRangDct={}
 	
 	for line in infh.xreadlines():
 		if line.startswith('@'):
 			continue
-		
 		linear=line.strip().split('\t')
-		
 #		get total reads and total bases
 		totalReads += 1
 		totalBases += len(linear[9])
@@ -413,12 +406,6 @@ def samInfoProc(rawDir,resDir,samFile,bedDct):
 		
 		if len(mismAr) > 0:
 			mismReads += 1
-		'''
-		DMD gene region on chrX:
-			31137344,33146544
-			extend head and tail by 300
-		'''
-		dmdRange=[31137344,33146544]
 		
 		sttP=int(linear[3])
 		softTpat=re.compile(r'(\d+)S$')
@@ -433,7 +420,7 @@ def samInfoProc(rawDir,resDir,samFile,bedDct):
 			dupReads += 1
 		else:
 			univRangDct[poskey] = 1
-		
+			
 		insPat=re.compile(r'(\d+)I')
 		if 'I' in linear[5]:
 			insReads += 1
@@ -447,17 +434,19 @@ def samInfoProc(rawDir,resDir,samFile,bedDct):
 			delLst=[int(i) for i in delLst]
 			delBases += sum(delLst)
 		
-		if linear[2] != 'chrX' or endP < dmdRange[0] or sttP > dmdRange[-1]:
+		if linear[2] != 'chrX' or endP < bedDct[0][0] or sttP > bedDct[-1][-1]:
 			continue
 		
-		onTgtReads += 1
-		tgtTotalLen = tgtTotalLen + abs(endP - sttP) + 1
-	
+		for subList in bedDct:
+			if subList[0] <= sttP <= subList[1] or subList[0] <= endP <= subList[1]:
+				onTgtReads += 1
+				tgtTotalLen = tgtTotalLen + abs(endP - sttP) + 1
+				break
 	infh.close()
 	print 'samInfoProc ends for '+samFile+' ...'
 	return totalReads,totalBases,basegr20,basegr30,mappedReads,mappedBases,onTgtReads,dupReads,mismReads,mismBases,insReads,insBases,delReads,delBases,mappedReadTtlen,unmappedReadTtlen,unmappedReads,tgtTotalLen
 
-def depthInfoProc(rawDir,sortedBam,pluginDir):
+def depthInfoProc(rawDir,sortedBam,pluginDir,bedDct):
 	os.chdir(rawDir)
 	if not os.path.exists(sortedBam+'.dpth'):
 		samDptCmd=pluginDir+'/samtools depth '+sortedBam+' > '+sortedBam+'.dpth'
@@ -477,48 +466,52 @@ def depthInfoProc(rawDir,sortedBam,pluginDir):
 	
 	univPosDptLst=[]
 	
-	dmdRange=[31137344,33146544]
 	with open(sortedBam+'.dpth','r') as infh:
 		for line in iter(infh):
 			linear=line.strip().split('\t')
-			if linear[0] == 'chrX' and dmdRange[0] <= int(linear[1]) <= dmdRange[1]:
-				ontgtBases += int(linear[2])
-				univPosDptLst.append(int(linear[2]))
-				if int(linear[2]) >= 200:
-					x1bases += 1
-					x10bases += 1
-					x20bases += 1
-					x30bases += 1
-					x50bases += 1
-					x100bases += 1
-					x200bases += 1
-				elif int(linear[2]) >= 100:
-					x1bases += 1
-					x10bases += 1
-					x20bases += 1
-					x30bases += 1
-					x50bases += 1
-					x100bases += 1
-				elif int(linear[2]) >= 50:
-					x1bases += 1
-					x10bases += 1
-					x20bases += 1
-					x30bases += 1
-					x50bases += 1
-				elif int(linear[2]) >= 30:
-					x1bases += 1
-					x10bases += 1
-					x20bases += 1
-					x30bases += 1
-				elif int(linear[2]) >= 20:
-					x1bases += 1
-					x10bases += 1
-					x20bases += 1
-				elif int(linear[2]) >= 10:
-					x1bases += 1
-					x10bases += 1
-				elif int(linear[2]) >= 1:
-					x1bases += 1
+			if linear[0] != 'chrX' or int(linear[1]) < bedDct[0][0] or int(linear[1]) > bedDct[-1][-1]:
+				continue
+			
+			for subList in bedDct:
+				if subList[0] <= int(linear[1]) <= subList[1]:
+					ontgtBases += int(linear[2])
+					univPosDptLst.append(int(linear[2]))
+					if int(linear[2]) >= 200:
+						x1bases += 1
+						x10bases += 1
+						x20bases += 1
+						x30bases += 1
+						x50bases += 1
+						x100bases += 1
+						x200bases += 1
+					elif int(linear[2]) >= 100:
+						x1bases += 1
+						x10bases += 1
+						x20bases += 1
+						x30bases += 1
+						x50bases += 1
+						x100bases += 1
+					elif int(linear[2]) >= 50:
+						x1bases += 1
+						x10bases += 1
+						x20bases += 1
+						x30bases += 1
+						x50bases += 1
+					elif int(linear[2]) >= 30:
+						x1bases += 1
+						x10bases += 1
+						x20bases += 1
+						x30bases += 1
+					elif int(linear[2]) >= 20:
+						x1bases += 1
+						x10bases += 1
+						x20bases += 1
+					elif int(linear[2]) >= 10:
+						x1bases += 1
+						x10bases += 1
+					elif int(linear[2]) >= 1:
+						x1bases += 1
+					break
 	print 'depthInfoProc ends for '+ sortedBam + ' ...'
 	return x1bases,x10bases,x20bases,x30bases,x50bases,x100bases,x200bases,ontgtBases,univPosDptLst
 
@@ -526,6 +519,7 @@ def evenScore(covLst,tgtSizeEs,meanCovEs):
 	evenSc=0
 	covLst.sort(reverse=True)
 	divbase=tgtSizeEs*meanCovEs
+
 	for i in range(1,int(meanCovEs)+1):
 		ct=countNbr(covLst,i)
 		evenSc += ct/divbase
@@ -535,11 +529,14 @@ def evenScore(covLst,tgtSizeEs,meanCovEs):
 def countNbr(covLstCn,candi):
 	ctCn = 0
 	for j in covLstCn:
-		if candi <= j:
+		if j >= candi:
 			ctCn += 1
 		else:
+			print ctCn
 			return ctCn
 	return ctCn
 
 if __name__=='__main__':
 	main()
+
+
