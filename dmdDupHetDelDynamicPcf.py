@@ -64,6 +64,15 @@ parser.add_option(
 	help='depth file, ends with '
 	)
 	
+parser.add_option(
+	'-T',
+	'--tao-val',
+	dest='taoVal',
+	help='tao value, should be set to [1.5,3], default set to 2',
+	default=2,
+	type='int'
+	)
+	
 (options,args)=parser.parse_args()
 
 if not options.rawDir or not options.dpthFile:
@@ -75,10 +84,10 @@ dpthFile=options.dpthFile
 bedFile=options.bedFile
 gamma=options.gamma
 gapThres=options.gapThres
-
+taoVal=options.taoVal
 
 def main():
-	global rawDir,dpthFile,bedFile,gapThres,gamma,gapThres
+	global rawDir,dpthFile,bedFile,gapThres,gamma,gapThres,taoVal
 	os.chdir(rawDir)
 	
 	bedLst=getBed(bedFile,gapThres)
@@ -93,7 +102,8 @@ def main():
 	depthLen=len(depthObjList)
 #	print(depthLen)
 	
-	sdVal=calSig(depthObjList)
+	depthListforobj=[i.meanDpt for i in depthObjList]
+	sdVal=calSig(depthListforobj)
 	
 	print('using dynamic programming for getting list ...')
 	gammaSpl=gamma*sdVal
@@ -102,6 +112,7 @@ def main():
 	
 	idxIntv=cutIdxToIntv(idxList)
 	
+	winDptDf=idxValIntv(depthObjList,idxIntv,taoVal)
 	
 #==============================================================================
 # 	'''
@@ -114,22 +125,58 @@ def main():
 	
 	return
 	
-def idxValIntv(depthObjList,idxIntv):
+def idxValIntv(depthObjList,idxIntv,tao):
 	'''
 	this is for plotting method
 	calculate winsorized depth for given intervals
 	also note that in the final result, using plots for all depth and use line for intervals
+	using index instead of using positions for positions are not continuous
 	'''
+	depthList=[]
 	
-	return
+	for intvPair in idxIntv:
+		stt=intvPair[0]
+		end=intvPair[1]
+		indexRange=range(stt,end+1)
+		dptList=[depthObjList[i].meanDpt for i in indexRange]
+		medianDpt=getMedian(dptList)
+		mad=getMad(dptList,medianDpt)
+		refinedWinDptList=winSorize(dptList,medianDpt,mad,tao)
+		tmpList=[(indexRange[i],refinedWinDptList[i]) for i in range(len(indexRange))]
+		depthList.extend(tmpList)
+	return depthList
+	
+def winSorize(dptList,median,mad,tao):
+	refinedList=[]
+	theta=mad*tao
+	for depth in dptList:
+		if (depth-median) > theta:
+			refinedList.append(median+theta)
+		elif (depth-median) < -theta:
+			refinedList.append(median-theta)
+		else:
+			refinedList.append(depth)
+	return refinedList
+	
+def getMedian(valueLst):
+	valLen=len(valueLst)
+	if valLen % 2 == 0:
+		return valueLst[int(valLen/2)]
+	else:
+		return valueLst[int((valLen-1)/2)]
+	
+def getMad(dptList,median):
+	residues=[dptList[i]-median for i in dptList]
+	madSig=calSig(residues)
+	return madSig
 	
 def cutIdxToIntv(idxList):
 	idxList.sort()
 	idxIntvList=[(idxList[i],idxList[i+1]) for i in range(len(idxList)-1)]
 	return idxIntvList
 	
-def calSig(depthObjList):
-	meanDptLst=[i.meanDpt for i in depthObjList]
+def calSig(depthList):
+	meanDptLst=[i for i in depthList]
 	meanVal=sum(meanDptLst)/len(meanDptLst)
 	sdLst=[(j-meanVal)**2 for j in meanDptLst]
 	sdVal=sum(sdLst)/len(meanDptLst)
